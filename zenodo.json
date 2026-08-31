@@ -1,0 +1,16 @@
+{
+  "title": "OAC feature-selection benchmark: code, semi-synthetic benchmark, and DAV metric",
+  "upload_type": "software",
+  "license": "MIT",
+  "creators": [
+    { "name": "Chen, Yun-Lin", "affiliation": "MacKay Memorial Hospital, Taipei, Taiwan" },
+    { "name": "Lee, Oscar K.", "orcid": "0000-0000-0000-0000",
+      "affiliation": "Department of Biotechnology Medicine, MacKay Memorial Hospital, Taipei, Taiwan" }
+  ],
+  "keywords": ["feature selection","autoencoder","benchmarking","transcriptomics",
+               "disease-attributable variance","cross-cohort generalization","confounding"],
+  "related_identifiers": [
+    { "relation": "isSupplementTo", "scheme": "url",
+      "identifier": "https://github.com/<to-add>/oac-fs-benchmark" }
+  ]
+}
