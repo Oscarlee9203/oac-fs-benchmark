@@ -14,13 +14,17 @@ authors:
 license: MIT
 version: "1.1.0"
 date-released: "2026-10-07"
-doi: 10.5281/zenodo.22188863
+doi: 10.5281/zenodo.22188862
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.23219920
+    description: "Version 1.1.0, the release used for the article"
 repository-code: "https://github.com/Oscarlee9203/oac-fs-benchmark"
 keywords: ["feature selection", "benchmarking", "transcriptomics", "disease-attributable variance", "cross-cohort generalization"]
 preferred-citation:
   type: article
   status: submitted
-  title: "A ground-truth benchmark and an out-of-sample metric for evaluating gene selection in disease transcriptomics"
+  title: "A ground-truth benchmark and an out-of-sample metric for evaluating gene selection in transcriptomics of osteoarthritis and other diseases"
   authors:
     - family-names: Chen
       given-names: Yun-Lin

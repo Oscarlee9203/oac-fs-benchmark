@@ -1,9 +1,9 @@
 # OAC feature-selection benchmark
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22188863.svg)](https://doi.org/10.5281/zenodo.22188863)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22188862.svg)](https://doi.org/10.5281/zenodo.22188862)
 
 Code for *"A ground-truth benchmark and an out-of-sample metric for evaluating gene selection
-in disease transcriptomics"* (Chen & Lee, submitted).
+in transcriptomics of osteoarthritis and other diseases"* (Chen & Lee, submitted).
 
 The benchmark scores gene-selection methods in two ways: against a semi-synthetic ground truth
 in which the true disease genes and a confounder programme are known by construction, and on
@@ -86,8 +86,11 @@ cross-validated AUC. `methods.py` — DFS-AE, PERSIST-style selector, CADA-AE, X
 
 ## License and citation
 
-MIT (see `LICENSE`). Please cite the article and the archived software (see `CITATION.cff`;
-Zenodo concept DOI [10.5281/zenodo.22188863](https://doi.org/10.5281/zenodo.22188863)).
+MIT (see `LICENSE`). Please cite the article and the archived software (see `CITATION.cff`).
+The release used for the article is v1.1.0
+([10.5281/zenodo.23219920](https://doi.org/10.5281/zenodo.23219920)); the Zenodo concept DOI,
+which always resolves to the latest version, is
+[10.5281/zenodo.22188862](https://doi.org/10.5281/zenodo.22188862).
 
 ## AI-assisted development
 
