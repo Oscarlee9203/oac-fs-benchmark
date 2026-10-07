@@ -1,19 +1,29 @@
 #!/usr/bin/env python3
 """
-OAC feature-selection benchmark — master runner (v2, GPU-ready).
-Reproduces the 3-cohort validation and produces the analyses behind Figures 1-4
-of the GigaScience manuscript, including the review-driven additions:
-random baseline in leave-one-out, within-cohort split-half control, and the
-real-data confounder (sex) analysis.
+OAC feature-selection benchmark - master runner.
 
-Usage:
-  python run_all.py --fast                                   # quick CPU smoke test
-  python run_all.py --steps repro,f2,f3,f4,splithalf,confounder,f5,figs \
-                    --seeds 50 --epochs 500 --synthG 0 --device cuda
+`python run_all.py` reproduces every analysis and figure in the article with the
+settings used there:
 
-Data: place the 6 GEO datasets in ./data/ (see data/README.md). Outputs -> ./results/.
+  * semi-synthetic benchmark (f2): a random 3,000-gene subset of the cartilage
+    background (--synthG 3000), 10 seeds (--seeds 10), deep selectors trained for
+    250 epochs (--synth-epochs 250); the sensitivity step (f2sens) repeats it at 80 and
+    500 epochs;
+  * real-data analyses (f3, f4, confounder): deep selectors trained for 500 epochs
+    (--epochs 500; the first XC-CADA-AE version uses half of that); the split-half
+    control uses 40 random splits; random baselines use 50 random panels.
+
+Other usage:
+  python run_all.py --fast                        # quick CPU smoke test (not the article's numbers)
+  python run_all.py --steps f2,f2sens             # synthetic benchmark + training-length sensitivity only
+  python run_all.py --steps f2 --synthG 0         # synthetic benchmark on the full gene set
+
+Data: place the GEO files listed in README.md in ./data/. Outputs -> ./results/.
+Autoencoder-based numbers depend on the PyTorch version; the versions pinned in
+requirements.txt reproduce the article.
 """
-import argparse, os, json, time, warnings, numpy as np
+import argparse, os, json, time, warnings, functools, numpy as np
+print = functools.partial(print, flush=True)
 warnings.filterwarnings("ignore")
 import pipeline as P, methods as M
 from numpy.random import default_rng
@@ -82,45 +92,70 @@ def _sel(D,k,method,epochs,dev):
 
 # ---------------- steps ----------------
 def step_repro(a):
-    print("\n== Reproduction (3 OA cohorts vs internal reference) ==")
-    ref={"OA_cartilage_114007":(20,18,15.8,0.679),"OA_cartilage_117999":(10,10,6.7,0.726),
-         "OA_cartilage_57218":(33,40,2.6,0.278)}; out={}
+    """Data-loading check: group sizes, share of differentially expressed genes (moderated t,
+    BH FDR < 0.05) and DAV of the supervised panel must equal the stored reference values."""
+    print("\n== Data-loading check (three cartilage cohorts) ==")
+    ref={"OA_cartilage_114007":(20,18,16.0,0.679),"OA_cartilage_117999":(10,10,6.3,0.738),
+         "OA_cartilage_57218":(33,40,1.9,0.282)}; out={}
     for k in CART:
         X,g,y=P.load_any(k); _,_,fdr=P.moderated_ttest(X,y)
         de=P.sel_supervised_de(X,y); r2=P.point_biserial_r2(X,y)
         out[k]=dict(case=int((y==1).sum()),ctrl=int((y==0).sum()),
                     bgDE=round(100*(fdr<0.05).mean(),1),SupDE_R2dis=round(float(np.median(r2[de])),3))
-        T=ref[k]; print(f"  {k}: {out[k]['case']}/{out[k]['ctrl']} (ref {T[0]}/{T[1]}) "
-                        f"bgDE {out[k]['bgDE']}% (ref {T[2]}) R2dis {out[k]['SupDE_R2dis']} (ref {T[3]})")
+        T=ref[k]; got=(out[k]["case"],out[k]["ctrl"],out[k]["bgDE"],out[k]["SupDE_R2dis"])
+        ok=got[:2]==T[:2] and abs(got[2]-T[2])<=0.1 and abs(got[3]-T[3])<=0.002
+        print(f"  {k}: cases/controls {got[0]}/{got[1]}, DE genes {got[2]}%, DAV {got[3]}  [{'ok' if ok else 'MISMATCH, expected '+str(T)}]")
+        if not ok: raise SystemExit(f"Data-loading check failed for {k}: got {got}, expected {T}")
     json.dump(out, open(f"{a.outdir}/repro.json","w"), indent=1)
 
-def step_f2(a):
-    print("\n== F2 ground-truth benchmark ==")
+def _f2_compute(a, synth_epochs):
+    """Semi-synthetic benchmark for one training length. Returns (panel A, panel B) dicts."""
     Xbg,_,yb=P.load_gse114007("data"); Xbg=Xbg[yb==0]; seeds=list(range(a.seeds)); dev=a.device; G=a.synthG
     METH=["SupervisedDE","HighVar","PCA","Random","DFS-AE","CADA-AE"]; FCS=[0.5,1.0,1.5]
     resA={m:{fc:[] for fc in FCS} for m in METH}; perm={fc:[] for fc in FCS}
     for fc in FCS:
         for s in seeds:
             X,y,conf,tm,cm=make_v2(Xbg,G=G,log2fc=fc,conf_amp=2.0,conf_corr=0.0,seed=s)
-            for m in METH: resA[m][fc].append(average_precision_score(tm,synth_score(m,X,y,conf,s,a.synth_epochs,dev)))
+            for m in METH: resA[m][fc].append(average_precision_score(tm,synth_score(m,X,y,conf,s,synth_epochs,dev)))
             yp=default_rng(1000+s).permutation(y); perm[fc].append(average_precision_score(tm,P.f_oneway_vec(X,yp)[0]))
-        print(f"  A fc={fc} done")
-    json.dump({"fcs":FCS,"methods":{m:{fc:ci(resA[m][fc]) for fc in FCS} for m in METH},
-               "perm_null":{fc:ci(perm[fc]) for fc in FCS}}, open(f"{a.outdir}/f2ci_A.json","w"),indent=1)
+        print(f"  [{synth_epochs} epochs] A fc={fc} done")
+    A={"fcs":FCS,"methods":{m:{fc:ci(resA[m][fc]) for fc in FCS} for m in METH},
+       "perm_null":{fc:ci(perm[fc]) for fc in FCS}}
     METHB=["SupervisedDE","DFS-AE","PERSIST","CADA-AE"]; CORRS=[0.0,0.4,0.8]
     AU={m:{c:[] for c in CORRS} for m in METHB}; CN={m:{c:[] for c in CORRS} for m in METHB}
     for cc in CORRS:
         for s in seeds:
             X,y,conf,tm,cm=make_v2(Xbg,G=G,log2fc=1.0,conf_amp=3.0,conf_corr=cc,seed=s)
             for m in METHB:
-                z=synth_score(m,X,y,conf,s,a.synth_epochs,dev)
+                z=synth_score(m,X,y,conf,s,synth_epochs,dev)
                 AU[m][cc].append(average_precision_score(tm,z)); CN[m][cc].append(100*cm[np.argsort(z)[::-1][:100]].mean())
-        print(f"  B corr={cc} done")
-    json.dump({"corrs":CORRS,"auprc":{m:{c:ci(AU[m][c]) for c in CORRS} for m in METHB},
-               "contam":{m:{c:ci(CN[m][c]) for c in CORRS} for m in METHB}}, open(f"{a.outdir}/f2ci_B.json","w"),indent=1)
+        print(f"  [{synth_epochs} epochs] B corr={cc} done")
+    B={"corrs":CORRS,"auprc":{m:{c:ci(AU[m][c]) for c in CORRS} for m in METHB},
+       "contam":{m:{c:ci(CN[m][c]) for c in CORRS} for m in METHB}}
+    return A,B
 
+def step_f2(a):
+    print("\n== F2 ground-truth benchmark ==")
+    A,B=_f2_compute(a,a.synth_epochs)
+    json.dump(A, open(f"{a.outdir}/f2ci_A.json","w"),indent=1)
+    json.dump(B, open(f"{a.outdir}/f2ci_B.json","w"),indent=1)
+
+SENS_EPOCHS=[80,250,500]
+def step_f2sens(a):
+    print("\n== F2 sensitivity to training length ==")
+    out={}
+    for ep in SENS_EPOCHS:
+        if ep==a.synth_epochs and os.path.exists(f"{a.outdir}/f2ci_A.json"):
+            A=json.load(open(f"{a.outdir}/f2ci_A.json")); B=json.load(open(f"{a.outdir}/f2ci_B.json"))
+        else:
+            A,B=_f2_compute(a,ep)
+        out[str(ep)]={"A":A,"B":B}
+    json.dump(out, open(f"{a.outdir}/f2_sensitivity.json","w"),indent=1)
+
+N_RANDOM=50
 def step_f3(a):
     print("\n== F3 cross-cohort transfer ==")
+    rnd_out={}
     for tag,keys in [("cartilage",CART),("synovium",["OA_synovium_55235","OA_synovium_55457"])]:
         D=_common(keys); METH=["SupervisedDE","HighVar","PCA","Random","DFS-AE","CADA-AE"]; summ={}
         for m in METH:
@@ -131,10 +166,19 @@ def step_f3(a):
                     if b==x: continue
                     cr.append(float(np.median(P.point_biserial_r2(*D[b][:2])[idx]))); au.append(P.cv_auc(D[b][0],D[b][1],feat_idx=idx)[0])
             summ[m]={"in":float(np.mean(ins)),"cross":float(np.mean(cr)),"cross_auc":float(np.mean(au))}
+        # A random panel does not depend on the cohort it is "selected" in, so its in-sample and
+        # cross-cohort DAV coincide. N_RANDOM panels give the floor against which DAV is read;
+        # the AUC entry stays that of the first panel (seed 0).
+        r2={k:P.point_biserial_r2(*D[k][:2]) for k in keys}
+        pm=[float(np.mean([np.median(r2[k][P.sel_random(D[k][0],seed=s)]) for k in keys])) for s in range(N_RANDOM)]
+        summ["Random"]["in"]=summ["Random"]["cross"]=float(np.mean(pm))
+        rnd_out[tag]={"panel_means":pm,"mean":float(np.mean(pm)),"min":float(np.min(pm)),"max":float(np.max(pm)),
+                      "n_panels_below":{m:int(sum(v<summ[m]["cross"] for v in pm)) for m in METH if m!="Random"}}
         json.dump(summ, open(f"{a.outdir}/f3_{tag}.json","w"),indent=1); print(f"  {tag} done")
+    json.dump(rnd_out, open(f"{a.outdir}/f3_random.json","w"),indent=1)
 
 def step_f4(a):
-    print("\n== F4 leave-one-cohort-out (with Random & HighVar baselines) ==")
+    print("\n== F4 leave-one-cohort-out (against matched random panels) ==")
     D=_common(CART)
     def consensusDE(tr):
         Fs=[np.argsort(np.argsort(P.f_oneway_vec(*D[t][:2])[0])) for t in tr]
@@ -150,39 +194,64 @@ def step_f4(a):
         rows["XC-CADA-AE"].append(davC(held,M.train_xccada([(D[k][0],D[k][1]) for k in tr],epochs=a.epochs//2,dev=a.device)[0]))
         g=np.mean([M.train_xccada2([(D[k][0],D[k][1]) for k in tr],epochs=a.epochs,seed=s,dev=a.device) for s in range(3)],0)
         rows["XC-CADA-AE-v2"].append(davC(held,np.argsort(g)[::-1][:100]))
-        for s in range(50): rnd.append(davC(held,P.sel_random(D[x][0],seed=s)))
+        # the same N_RANDOM random panels are scored in every held-out cohort
+        rnd.append([davC(held,P.sel_random(D[x][0],seed=s)) for s in range(N_RANDOM)])
         print(f"  held-out {held.split('_')[-1]} done")
-    rm=float(np.mean(rnd)); z=(np.mean(rows["ConsensusDE"])-rm)/np.std(rnd,ddof=1); pval=float(1-stats.norm.cdf(z))
-    json.dump({"per_fold":rows,"mean":{m:float(np.mean(v)) for m,v in rows.items()},
-               "random_mean":rm,"random_ci":ci(rnd)[1:],"p_consensus_gt_random":pval},
+    # Like-for-like baseline: each random panel's mean over the three held-out cohorts, compared
+    # with each method's mean over the same three cohorts (empirical one-sided p, add-one).
+    pm=np.mean(np.array(rnd),0); mean={m:float(np.mean(v)) for m,v in rows.items()}
+    below={m:int((pm<v).sum()) for m,v in mean.items()}
+    pemp={m:float((1+(pm>=v).sum())/(N_RANDOM+1)) for m,v in mean.items()}
+    json.dump({"per_fold":rows,"mean":mean,"random_per_fold_mean":[float(np.mean(r)) for r in rnd],
+               "random_panel_means":[float(v) for v in pm],"random_mean":float(pm.mean()),
+               "random_range":[float(pm.min()),float(pm.max())],
+               "n_random_below":below,"p_empirical":pemp,"n_random":N_RANDOM},
               open(f"{a.outdir}/f4_xc.json","w"),indent=1)
-    print(f"  ConsensusDE {np.mean(rows['ConsensusDE']):.3f} vs Random {rm:.3f}  p={pval:.3f}")
+    for m in mean: print(f"  {m:14s} {mean[m]:.3f}  above {below[m]}/{N_RANDOM} random panels (p={pemp[m]:.3f})")
+    print(f"  random panels: mean {pm.mean():.3f}, range {pm.min():.3f}-{pm.max():.3f}")
 
+N_SPLITS=40
 def step_splithalf(a):
-    print("\n== Within-cohort split-half control (winner's-curse) ==")
-    D=_common(CART); out={}
+    print("\n== Within-cohort split-half control ==")
+    D=_common(CART); out={}; floor={}
     for k in CART:
-        X,y,_=D[k]; vals=[]
-        for s in range(a.seeds if a.seeds>=20 else 40):
+        X,y,_=D[k]; vals=[]; rv=[]
+        for s in range(N_SPLITS):
             rng=default_rng(s); A=[]
             for cls in (0,1):
                 ix=np.where(y==cls)[0].copy(); rng.shuffle(ix); A+=list(ix[:len(ix)//2])
             A=set(A); B=np.array([i for i in range(len(y)) if i not in A]); A=np.array(sorted(A))
-            idx=P.sel_supervised_de(X[A],y[A]); vals.append(float(np.median(P.point_biserial_r2(X[B],y[B])[idx])))
-        out[k]=ci(vals); print(f"  {k.split('_')[-1]}: within-cohort split-half DAV = {out[k][0]:.3f}")
+            r2B=P.point_biserial_r2(X[B],y[B])
+            idx=P.sel_supervised_de(X[A],y[A]); vals.append(float(np.median(r2B[idx])))
+            rv.append(float(np.median(r2B[P.sel_random(X,seed=s)])))   # random panel, same evaluation half
+        out[k]=ci(vals); floor[k]=ci(rv)
+        print(f"  {k.split('_')[-1]}: split-half DAV = {out[k][0]:.3f} (random panel in the same halves {floor[k][0]:.3f})")
     json.dump(out, open(f"{a.outdir}/splithalf.json","w"),indent=1)
+    json.dump(floor, open(f"{a.outdir}/splithalf_random.json","w"),indent=1)
 
 def step_confounder(a):
-    print("\n== Real-data confounder (sex) capture — cartilage ==")
-    D=_common(CART); rows={}
+    print("\n== Real-data confounder (sex) capture - cartilage ==")
+    D=_common(CART); rows={}; sset=P.load_sexchr_set()
+    def summ(X,genes,r2d,r2s,idx):
+        return {"R2dis":float(np.median(r2d[idx])),"R2sex":float(np.median(r2s[idx])),
+                "sexchr":int(sum(genes[i] in sset for i in idx))}
     for k in CART:
         X,y,genes=D[k]; sex=P.infer_sex(X,genes); r2s=P.point_biserial_r2(X,sex); r2d=P.point_biserial_r2(X,y)
-        sels={"SupervisedDE":P.sel_supervised_de(X,y),"HighVar":P.sel_highvar(X),"Random":P.sel_random(X,seed=0),
-              "DFS-AE":np.argsort(M.sel_ae_unsup(X,seed=0,epochs=a.epochs,dev=a.device))[::-1][:100],
-              "CADA-AE":M.sel_cadaae(X,y,sex,seed=0,epochs=a.epochs,dev=a.device)[0]}
-        sset=P.load_sexchr_set()
-        rows[k]={m:{"R2dis":float(np.median(r2d[idx])),"R2sex":float(np.median(r2s[idx])),
-                    "sexchr":int(sum(genes[i] in sset for i in idx))} for m,idx in sels.items()}
+        gset=set(genes); ann=P.annotated_sex(k)
+        rows[k]={"n_male":int(sex.sum()),"n":int(len(sex)),
+                 "n_male_cases":int(sex[y==1].sum()),"n_cases":int((y==1).sum()),
+                 "n_male_controls":int(sex[y==0].sum()),"n_controls":int((y==0).sum()),
+                 "y_genes_used":[g for g in P.SEX_Y_MARKERS if g in gset],
+                 "n_sexchr_genes_present":len(sset&gset),
+                 "annotated_sex_agreement":None if ann is None else [int(((sex==1)==(ann==1)).sum()),int(len(ann))]}
+        for m,idx in {"SupervisedDE":P.sel_supervised_de(X,y),"HighVar":P.sel_highvar(X)}.items():
+            rows[k][m]=summ(X,genes,r2d,r2s,idx)
+        # stochastic selectors: one entry per seed (deep selectors are single training runs per seed)
+        rows[k]["Random"]=[summ(X,genes,r2d,r2s,P.sel_random(X,seed=s)) for s in range(a.conf_seeds)]
+        rows[k]["DFS-AE"]=[summ(X,genes,r2d,r2s,np.argsort(M.sel_ae_unsup(X,seed=s,epochs=a.epochs,dev=a.device))[::-1][:100])
+                           for s in range(a.conf_seeds)]
+        rows[k]["CADA-AE"]=[summ(X,genes,r2d,r2s,M.sel_cadaae(X,y,sex,seed=s,epochs=a.epochs,dev=a.device)[0])
+                            for s in range(a.conf_seeds)]
         print(f"  {k.split('_')[-1]} done")
     json.dump(rows, open(f"{a.outdir}/confounder_real.json","w"),indent=1)
 
@@ -191,8 +260,15 @@ def step_f5(a):
     rows=[]
     for name,key in PANEL:
         X,g,y=P.load_any(key); r2=P.point_biserial_r2(X,y); o={"name":name,"n":int(len(y))}
-        for m,idx in [("SupDE",P.sel_supervised_de(X,y)),("HighVar",P.sel_highvar(X)),("Random",P.sel_random(X,seed=0))]:
-            o[m+"_DAV"]=float(np.median(r2[idx])); o[m+"_AUC"]=float(P.cv_auc(X,y,feat_idx=idx)[0])
+        # In-sample DAV uses the panel selected on all samples. For the AUC, data-dependent
+        # selectors are re-fitted inside every training fold so that no test-fold information
+        # enters the selection; a random panel does not depend on the data.
+        spec=[("SupDE",P.sel_supervised_de(X,y),lambda Xt,yt,k: P.sel_supervised_de(Xt,yt,k)),
+              ("HighVar",P.sel_highvar(X),lambda Xt,yt,k: P.sel_highvar(Xt,k=k)),
+              ("Random",P.sel_random(X,seed=0),None)]
+        for m,idx,fn in spec:
+            o[m+"_DAV"]=float(np.median(r2[idx]))
+            o[m+"_AUC"]=float(P.cv_auc(X,y,select_fn=fn)[0] if fn else P.cv_auc(X,y,feat_idx=idx)[0])
         rows.append(o); print(f"  {name} done")
     json.dump(rows, open(f"{a.outdir}/f5_panel.json","w"),indent=1)
 
@@ -202,19 +278,22 @@ def step_figs(a):
 
 def main():
     ap=argparse.ArgumentParser()
-    ap.add_argument("--steps",default="repro,f2,f3,f4,splithalf,confounder,f5,figs")
-    ap.add_argument("--seeds",type=int,default=50)
+    ap.add_argument("--steps",default="repro,f2,f2sens,f3,f4,splithalf,confounder,f5,figs")
+    ap.add_argument("--seeds",type=int,default=10)
     ap.add_argument("--epochs",type=int,default=500)
     ap.add_argument("--synth-epochs",dest="synth_epochs",type=int,default=250)
-    ap.add_argument("--synthG",type=int,default=0)
+    ap.add_argument("--synthG",type=int,default=3000)
+    ap.add_argument("--conf-seeds",dest="conf_seeds",type=int,default=5)
     ap.add_argument("--device",default=M.DEVICE)
     ap.add_argument("--outdir",default="results")
     ap.add_argument("--fast",action="store_true")
     a=ap.parse_args()
-    if a.fast: a.seeds=3; a.epochs=100; a.synth_epochs=80; a.synthG=3000
+    if a.fast:
+        a.seeds=3; a.epochs=100; a.synth_epochs=80; a.synthG=3000; a.conf_seeds=2
+        global SENS_EPOCHS; SENS_EPOCHS=[40,80]
     os.makedirs(a.outdir,exist_ok=True)
     print(f"device={a.device} seeds={a.seeds} epochs={a.epochs} synthG={a.synthG or 'full'}")
-    steps={"repro":step_repro,"f2":step_f2,"f3":step_f3,"f4":step_f4,"splithalf":step_splithalf,
+    steps={"repro":step_repro,"f2":step_f2,"f2sens":step_f2sens,"f3":step_f3,"f4":step_f4,"splithalf":step_splithalf,
            "confounder":step_confounder,"f5":step_f5,"figs":step_figs}
     t0=time.time()
     for s in a.steps.split(","):

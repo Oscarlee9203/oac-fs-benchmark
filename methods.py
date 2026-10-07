@@ -1,6 +1,6 @@
-"""Flagship methods (GPU-ready): DFS-AE/VAE gate scores, PERSIST-style supervised
-gate, CADA-AE (disease-supervised + confounder-adversarial + sparse gate), and
-XC-CADA-AE (cross-cohort domain-adversarial). All accept device='cuda'/'cpu'."""
+"""Deep selectors: unsupervised gated autoencoder (DFS-AE), PERSIST-style supervised
+gate, CADA-AE (disease-supervised + confounder-adversarial + sparse gate) and the
+cross-cohort XC-CADA-AE variants. All accept dev='cuda' or 'cpu'."""
 import numpy as np, torch, torch.nn as nn
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

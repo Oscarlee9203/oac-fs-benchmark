@@ -1,6 +1,6 @@
 """
-OA cross-cohort feature-selection benchmark — reconstruction pipeline.
-Faithful to Supplementary Methods (CBM submission). Strengthening hooks added later.
+OAC feature-selection benchmark: data loaders, differential expression, DAV,
+classical selectors and cross-validated AUC.
 """
 import numpy as np, pandas as pd, gzip, re
 from scipy import stats
@@ -8,9 +8,10 @@ import scipy.special as sp
 
 RNG = np.random.default_rng(0)
 
-# ---------- sex-chromosome gene set (approx; Y + XIST + common chrX escapees) ----------
+# ---------- sex-linked genes: 12 Y-linked genes and XIST ----------
 Y_GENES = ["RPS4Y1","DDX3Y","UTY","KDM5D","USP9Y","EIF1AY","NLGN4Y","TXLNGY","ZFY",
-           "PRKY","TMSB4Y","UTY","RPS4Y2","XIST"]
+           "PRKY","TMSB4Y","RPS4Y2","XIST"]
+SEX_Y_MARKERS = ["RPS4Y1","DDX3Y","UTY","KDM5D"]   # Y-linked markers used to infer sex (those present)
 def load_sexchr_set():
     return set(Y_GENES)
 
@@ -94,7 +95,7 @@ def point_biserial_r2(X, y):
 
 def infer_sex(X, genes):
     gi = {g:i for i,g in enumerate(genes)}
-    ys = [g for g in ["RPS4Y1","DDX3Y","UTY","KDM5D"] if g in gi]
+    ys = [g for g in SEX_Y_MARKERS if g in gi]
     if "XIST" in gi and ys:
         xist = X[:, gi["XIST"]]
         ymean = X[:, [gi[g] for g in ys]].mean(1)
@@ -164,57 +165,8 @@ def load_gse117999(datadir):
     df = df[~df[samp].isna().all(axis=1)]
     expr = df.groupby("GeneName")[samp].apply(lambda g: g.loc[g.mean(1).idxmax()])  # highest-mean probe/gene
     genes = np.array(expr.index)
-    y = np.array([0 if s.startswith("P4-0") else 1 for s in samp])   # P4-0xx vs P4-1xx (direction TBD)
+    y = np.array([0 if s.startswith("P4-0") else 1 for s in samp])   # P4-1xx = OA (arthroplasty), P4-0xx = non-OA (meniscal tear); direction checked against the markers reported in the GEO record
     return expr.T.values.astype(float), genes, y, samp
-
-# ============================================================
-# Deep feature selectors (DFS-AE, VAE) — per Supplementary Methods S2
-# ============================================================
-def _torch_seed(s):
-    import torch; torch.manual_seed(s); np.random.seed(s)
-def _torch_dev():
-    import torch; return "cuda" if torch.cuda.is_available() else "cpu"
-
-def sel_dfsae(X, y=None, k=100, seed=0, standardize=False, epochs=500, lam=1e-5, dev=None):
-    import torch, torch.nn as nn
-    _torch_seed(seed); dev = dev or _torch_dev()
-    Xin = X.copy()
-    if standardize: Xin = (Xin - Xin.mean(0))/(Xin.std(0)+1e-8)
-    D = Xin.shape[1]; xt = torch.tensor(Xin, dtype=torch.float32, device=dev)
-    gate = nn.Parameter(torch.ones(D, device=dev))
-    enc = nn.Sequential(nn.Linear(D,512), nn.BatchNorm1d(512), nn.ReLU(), nn.Linear(512,128), nn.ReLU()).to(dev)
-    dec = nn.Sequential(nn.Linear(128,512), nn.ReLU(), nn.Linear(512,D)).to(dev)
-    opt = torch.optim.AdamW(list(enc.parameters())+list(dec.parameters())+[gate], lr=1e-3, weight_decay=1e-4)
-    for _ in range(epochs):
-        opt.zero_grad()
-        z = enc(xt*gate); xr = dec(z)
-        loss = ((xr-xt)**2).mean() + lam*gate.abs().sum()
-        loss.backward(); opt.step()
-    imp = gate.detach().abs().cpu().numpy()
-    return np.argsort(imp)[::-1][:k]
-
-def sel_vae(X, y=None, k=100, seed=0, standardize=False, epochs=500, lam=1e-5, beta=1e-3, dev=None):
-    import torch, torch.nn as nn
-    _torch_seed(seed); dev = dev or _torch_dev()
-    Xin = X.copy()
-    if standardize: Xin = (Xin - Xin.mean(0))/(Xin.std(0)+1e-8)
-    D = Xin.shape[1]; xt = torch.tensor(Xin, dtype=torch.float32, device=dev)
-    gate = nn.Parameter(torch.ones(D, device=dev))
-    enc = nn.Sequential(nn.Linear(D,512), nn.BatchNorm1d(512), nn.ReLU(), nn.Linear(512,256), nn.ReLU()).to(dev)
-    fmu = nn.Linear(256,128).to(dev); flv = nn.Linear(256,128).to(dev)
-    dec = nn.Sequential(nn.Linear(128,512), nn.ReLU(), nn.Linear(512,D)).to(dev)
-    params = list(enc.parameters())+list(fmu.parameters())+list(flv.parameters())+list(dec.parameters())+[gate]
-    opt = torch.optim.AdamW(params, lr=1e-3, weight_decay=1e-4)
-    for _ in range(epochs):
-        opt.zero_grad()
-        h = enc(xt*gate); mu=fmu(h); lv=flv(h)
-        z = mu + torch.randn_like(mu)*torch.exp(0.5*lv)
-        xr = dec(z)
-        kl = -0.5*torch.mean(1+lv-mu**2-lv.exp())
-        loss = ((xr-xt)**2).mean() + beta*kl + lam*gate.abs().sum()
-        loss.backward(); opt.step()
-    imp = gate.detach().abs().cpu().numpy()
-    return np.argsort(imp)[::-1][:k]
 
 # ---------- GSE57218 (Illumina HT-12, series matrix + bgx annotation) ----------
 def _bgx_probe2sym(tarpath="data/GSE57218_RAW.tar"):
@@ -305,6 +257,12 @@ DATASETS = {
  "RA_synovium_55457":   ("sm","GSE55457_series_matrix.txt.gz","clinical status",["rheumatoid"],["normal"]),
  "AD_brain_5281":       ("sm","GSE5281_series_matrix.txt.gz","Disease State",["alzheim"],["normal"]),
 }
+def annotated_sex(key, datadir="data"):
+    """Deposited sex (1 = male, 0 = female) in loader sample order, or None if not parsed."""
+    if DATASETS[key][0] != "gse57218": return None
+    sex = load_gse57218(datadir)[3]["sex"]          # loader codes 0 = male, 1 = female
+    return None if sex is None else (1 - sex)
+
 def load_any(key, datadir="data"):
     spec=DATASETS[key]
     if spec[0]=="gse114007": return load_gse114007(datadir)[:3]

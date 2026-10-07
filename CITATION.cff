@@ -1,25 +1,29 @@
 cff-version: 1.2.0
 message: "If you use this benchmark, please cite the article and the archived software."
 title: "OAC feature-selection benchmark"
+type: software
 authors:
   - family-names: Chen
     given-names: Yun-Lin
+    affiliation: "Department of Biotechnology Medicine, MacKay Memorial Hospital, Taipei, Taiwan"
   - family-names: Lee
     given-names: Oscar K.
     email: oscarlee9203@gmail.com
+    orcid: "https://orcid.org/0000-0001-5232-5374"
     affiliation: "Department of Biotechnology Medicine, MacKay Memorial Hospital, Taipei, Taiwan"
 license: MIT
-version: "2.0.0"
-date-released: "2026-08-31"
-repository-code: "https://github.com/<to-add>/oac-fs-benchmark"
-keywords: ["feature selection","benchmarking","transcriptomics","disease-attributable variance","cross-cohort generalization"]
+version: "1.1.0"
+date-released: "2026-10-07"
+doi: 10.5281/zenodo.22188863
+repository-code: "https://github.com/Oscarlee9203/oac-fs-benchmark"
+keywords: ["feature selection", "benchmarking", "transcriptomics", "disease-attributable variance", "cross-cohort generalization"]
 preferred-citation:
   type: article
-  title: "Classification accuracy is not selection quality: a ground-truth benchmark shows that disease-gene selection does not transfer across transcriptomic cohorts"
+  status: submitted
+  title: "A ground-truth benchmark and an out-of-sample metric for evaluating gene selection in disease transcriptomics"
   authors:
     - family-names: Chen
       given-names: Yun-Lin
     - family-names: Lee
       given-names: Oscar K.
-  journal: "GigaScience (submitted)"
   year: 2026
